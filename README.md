@@ -2,10 +2,11 @@
 
 `autopoints` automates SimPoint region discovery and gem5 checkpoint generation for later detailed simulation.
 
-The workflow has two stages:
+The workflow has three stages:
 
 1. `collect`: run a target program under Valgrind `exp-bbv`, then run SimPoint on the generated basic block vectors.
 2. `checkpoint`: use the selected SimPoints to run gem5 with `KVMCPU` through `sg kvm` and save warmup-adjusted checkpoints before each ROI.
+3. `simulate`: restore every generated checkpoint and run detailed O3CPU ROI simulations.
 
 ## Requirements
 
@@ -48,6 +49,28 @@ python -m autopoints checkpoint \
   --output-dir . \
   --gem5-bin ../gem5/build/X86/gem5.opt \
   --warmup-insts 30000000
+```
+
+Then restore and simulate every checkpoint with the default detailed O3CPU config. You can pass one benchmark checkpoint directory:
+
+```bash
+python -m autopoints simulate checkpoints/my-benchmark \
+  --gem5-bin ../gem5/build/X86/gem5.opt
+```
+
+Or pass the parent `checkpoints/` directory to discover every benchmark directory containing a `checkpoint.plan.json`:
+
+```bash
+python -m autopoints simulate checkpoints \
+  --gem5-bin ../gem5/build/X86/gem5.opt
+```
+
+`simulate` also accepts multiple checkpoint paths. Each path may be either a specific benchmark checkpoint directory or a parent directory containing benchmark checkpoint directories. It runs all discovered checkpoints in parallel by default. Limit concurrency with `--jobs`:
+
+```bash
+python -m autopoints simulate checkpoints/my-benchmark \
+  --gem5-bin ../gem5/build/X86/gem5.opt \
+  --jobs 4
 ```
 
 Install in editable mode if you prefer the `autopoints` console command:
@@ -129,6 +152,17 @@ checkpoints/
     m5out/
     cpt.simpoint_00_inst_.../
     cpt.simpoint_01_inst_.../
+simulations/
+  <bench>/
+    simpoint_00/
+      gem5.log
+      simulation.meta.json
+      m5out/
+        stats.txt
+        config.ini
+        config.json
+    simpoint_01/
+      ...
 ```
 
 Important files:
@@ -143,6 +177,9 @@ Important files:
 - `checkpoints/<bench>/checkpoint.meta.json`: reproducibility record for checkpoint generation.
 - `checkpoints/<bench>/gem5.log`: gem5 stdout/stderr from checkpoint creation.
 - `checkpoints/<bench>/m5out/`: gem5 output directory for the checkpoint run.
+- `simulations/<bench>/simpoint_XX/simulation.meta.json`: reproducibility record for one detailed restore simulation.
+- `simulations/<bench>/simpoint_XX/gem5.log`: gem5 stdout/stderr from one detailed restore simulation.
+- `simulations/<bench>/simpoint_XX/m5out/`: gem5 `--outdir` for one detailed restore simulation. gem5 writes `stats.txt`, `config.ini`, `config.json`, and related outputs here.
 
 `collect` supports `--stdin`, `--stdout`, `--stdout-append`, `--stderr`, and
 `--stderr-append`. These redirects are used during Valgrind collection, recorded
@@ -168,10 +205,52 @@ actual_warmup_insts = roi_start_instruction - checkpoint_instruction
 
 `checkpoint.plan.json` records both the ROI start and the checkpoint instruction for every SimPoint. Future detailed restore workflows should restore from the checkpoint, run `actual_warmup_insts`, reset stats at the ROI boundary, then simulate `interval_size` instructions.
 
+`simulate` follows that restore sequence by default. It runs each checkpoint's `warmup_insts`, resets stats, then runs `interval_size` ROI instructions. Override the ROI length with `--roi-insts`.
+
+## Detailed Simulation Configs
+
+The default `simulate` config is `autopoints/gem5_configs/se_o3_restore_simpoint.py`. It restores one SE-mode checkpoint, uses one detailed O3CPU, resets stats after warmup, and runs the requested ROI instruction count.
+
+Use `--gem5-config` to supply a different detailed simulation config:
+
+```bash
+python -m autopoints simulate checkpoints/my-benchmark \
+  --gem5-bin ../gem5/build/X86/gem5.opt \
+  --gem5-config ./configs/my_o3_restore_simpoint.py
+```
+
+A custom config should accept the same restore interface as the default config:
+
+```text
+--checkpoint-plan <path>
+--simpoint-index <index>
+--checkpoint-dir <path>
+--roi-insts <instructions>
+```
+
+To change O3CPU details such as branch predictor sizing, copy the default config and edit the Python directly. For example, after creating the `SimpleProcessor`, adjust the gem5 SimObject fields:
+
+```python
+from m5.objects import TournamentBP
+
+processor = SimpleProcessor(cpu_type=CPUTypes.O3, isa=ISA.X86, num_cores=1)
+for core in processor.get_cores():
+    o3_cpu = core.get_simobject()
+    o3_cpu.branchPred.conditionalBranchPred = TournamentBP(
+        localPredictorSize=4096,
+        globalPredictorSize=16384,
+        choicePredictorSize=16384,
+    )
+```
+
+Keep the checkpoint plan parsing, workload setup, checkpoint restore, warmup, stats reset, and ROI scheduling behavior unless you intentionally want to change the simulation protocol.
+
 ## Implementation Notes
 
 - The checkpoint command launches gem5 as `sg kvm -c '<gem5 command>'`.
 - The current checkpoint config targets X86 SE-mode workloads with one KVM core.
+- The simulate command launches gem5 directly once per checkpoint and does not use `sg kvm`.
+- The default simulation config targets X86 SE-mode checkpoints with one O3CPU core.
 - KVM instruction stops rely on perf, so `autopoints checkpoint` fails early unless `/proc/sys/kernel/perf_event_paranoid` is `1`.
 - The checkpoint config does not use gem5's `SimpointResource`. `autopoints` already computes exact warmup-adjusted checkpoint instruction counts in `checkpoint.plan.json`, so the config schedules those stops directly. This avoids gem5 recomputing warmup-adjusted starts internally and avoids a zero-warmup bug observed in this gem5 tree's `SimpointResource` path.
 - All workflow code should use `autopoints.paths.AutopointsPaths` instead of constructing artifact paths directly.

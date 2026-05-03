@@ -22,6 +22,7 @@ from .gem5 import (
     wrap_with_sg_kvm,
 )
 from .paths import AutopointsPaths, benchmark_name_from_command, sanitize_benchmark_name
+from .simulate import default_simulation_config, simulate_checkpoints
 from .simpoints import parse_simpoints, write_json
 
 DEFAULT_INTERVAL_SIZE = 100_000_000
@@ -152,6 +153,59 @@ def build_parser() -> argparse.ArgumentParser:
         help="Write the checkpoint plan and print the gem5 command without running it.",
     )
     checkpoint.set_defaults(func=run_checkpoint)
+
+    simulate = subparsers.add_parser(
+        "simulate",
+        help="Restore and simulate checkpoints from one or more checkpoint directories.",
+        description=(
+            "Run detailed gem5 simulations for every checkpoint listed in an "
+            "autopoints checkpoint.plan.json and present on disk. Each input may be "
+            "a benchmark checkpoint directory or a parent checkpoints/ directory."
+        ),
+    )
+    simulate.add_argument(
+        "checkpoint_paths",
+        nargs="+",
+        type=Path,
+        help="checkpoint directory/directories to scan for checkpoint.plan.json files.",
+    )
+    simulate.add_argument(
+        "--gem5-bin",
+        required=True,
+        help="Path to the gem5 binary, for example ../gem5/build/X86/gem5.opt.",
+    )
+    simulate.add_argument(
+        "--gem5-config",
+        type=Path,
+        help=f"Detailed simulation config. Default: {default_simulation_config()}.",
+    )
+    simulate.add_argument(
+        "--gem5-arg",
+        action="append",
+        default=[],
+        help="Additional gem5 argument placed before the config script. May be passed multiple times.",
+    )
+    simulate.add_argument(
+        "--roi-insts",
+        type=positive_int,
+        help="ROI instructions to simulate after warmup. Default: checkpoint plan interval_size.",
+    )
+    simulate.add_argument(
+        "--jobs",
+        type=positive_int,
+        help="Number of checkpoint simulations to run in parallel. Default: all checkpoints.",
+    )
+    simulate.add_argument(
+        "--force",
+        action="store_true",
+        help="Run even when simulation.meta.json already says completed.",
+    )
+    simulate.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print gem5 commands and write planned metadata without running them.",
+    )
+    simulate.set_defaults(func=run_simulate)
     return parser
 
 
@@ -592,6 +646,19 @@ def run_checkpoint(args: argparse.Namespace) -> int:
     print(f"Checkpoints: {paths.checkpoints_dir}")
     print(f"Metadata: {paths.checkpoint_meta}")
     return 0
+
+
+def run_simulate(args: argparse.Namespace) -> int:
+    return simulate_checkpoints(
+        checkpoint_paths=args.checkpoint_paths,
+        gem5_bin_value=args.gem5_bin,
+        gem5_config=args.gem5_config,
+        gem5_args=args.gem5_arg,
+        roi_insts=args.roi_insts,
+        jobs=args.jobs,
+        force=args.force,
+        dry_run=args.dry_run,
+    )
 
 
 def main(argv: Sequence[str] | None = None) -> int:

@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator, Sequence
 
+from .aggregate import aggregate_metrics_json, format_aggregate_json
 from .checkpoint import DEFAULT_WARMUP_INSTS, create_checkpoint_plan
 from .gem5 import (
     PerfEventParanoidError,
@@ -21,6 +22,7 @@ from .gem5 import (
     run_logged,
     wrap_with_sg_kvm,
 )
+from .metrics import collect_simulation_metrics, format_metrics_json
 from .paths import AutopointsPaths, benchmark_name_from_command, sanitize_benchmark_name
 from .simulate import default_simulation_config, simulate_checkpoints
 from .simpoints import parse_simpoints, write_json
@@ -206,6 +208,61 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print gem5 commands and write planned metadata without running them.",
     )
     simulate.set_defaults(func=run_simulate)
+
+    metrics = subparsers.add_parser(
+        "metrics",
+        help="Extract weighted metrics from detailed simulation outputs.",
+        description=(
+            "Read autopoints simulation.meta.json files and gem5 stats.txt files, "
+            "then emit one JSON object containing SimPoint weights and all stats "
+            "whose names match the requested regex patterns."
+        ),
+    )
+    metrics.add_argument(
+        "simulation_path",
+        type=Path,
+        help="simulations/ root, simulations/<benchmark>, a simpoint directory, or simulation.meta.json.",
+    )
+    metrics.add_argument(
+        "metric_patterns",
+        nargs="+",
+        help="Regex pattern matched against full gem5 stat names, for example 'ipc'.",
+    )
+    metrics.add_argument(
+        "--output",
+        type=Path,
+        help="Write JSON metrics to this file instead of stdout.",
+    )
+    metrics.set_defaults(func=run_metrics)
+
+    aggregate = subparsers.add_parser(
+        "aggregate",
+        help="Aggregate collected metrics across weighted SimPoints.",
+        description=(
+            "Read JSON produced by autopoints metrics and write a new JSON file "
+            "containing weighted per-benchmark aggregate metric values."
+        ),
+    )
+    aggregate.add_argument(
+        "metrics_json",
+        type=Path,
+        help="JSON file produced by autopoints metrics.",
+    )
+    aggregate.add_argument(
+        "--metric",
+        action="append",
+        nargs=2,
+        required=True,
+        metavar=("REGEX", "AGGREGATION"),
+        help="Metric regex and aggregation. Supported aggregations: mean (weighted arithmetic mean), max. May be repeated.",
+    )
+    aggregate.add_argument(
+        "--output",
+        type=Path,
+        required=True,
+        help="Write aggregated JSON metrics to this file.",
+    )
+    aggregate.set_defaults(func=run_aggregate)
     return parser
 
 
@@ -659,6 +716,49 @@ def run_simulate(args: argparse.Namespace) -> int:
         force=args.force,
         dry_run=args.dry_run,
     )
+
+
+def run_metrics(args: argparse.Namespace) -> int:
+    try:
+        payload, warnings = collect_simulation_metrics(
+            simulation_path=args.simulation_path,
+            metric_patterns=args.metric_patterns,
+        )
+    except (FileNotFoundError, ValueError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 2
+
+    for warning in warnings:
+        print(warning, file=sys.stderr)
+    output = format_metrics_json(payload)
+    if args.output:
+        output_path = args.output.expanduser().resolve()
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(output, encoding="utf-8")
+        print(f"Metrics JSON: {output_path}")
+    else:
+        print(output, end="")
+    return 0
+
+
+def run_aggregate(args: argparse.Namespace) -> int:
+    try:
+        payload, warnings = aggregate_metrics_json(
+            metrics_json=args.metrics_json,
+            raw_specs=args.metric,
+        )
+    except (OSError, ValueError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 2
+
+    for warning in warnings:
+        print(warning, file=sys.stderr)
+    output = format_aggregate_json(payload)
+    output_path = args.output.expanduser().resolve()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(output, encoding="utf-8")
+    print(f"Aggregated metrics JSON: {output_path}")
+    return 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:

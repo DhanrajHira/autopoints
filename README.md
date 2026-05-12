@@ -73,6 +73,31 @@ python -m autopoints simulate checkpoints/my-benchmark \
   --jobs 4
 ```
 
+Extract weighted metrics from completed simulations by passing a `simulations/` root or one benchmark under it, followed by one or more regex patterns matched against full gem5 stat names:
+
+```bash
+python -m autopoints metrics simulations/my-benchmark ipc memOrderViolation
+```
+
+Write the same JSON directly to a file with `--output`:
+
+```bash
+python -m autopoints metrics simulations/my-benchmark ipc --output metrics.json
+```
+
+The output is one JSON object keyed by benchmark and SimPoint. Each SimPoint entry contains its SimPoint `weight` and every stat whose name matches any requested regex. For example, `ipc` matches both `board.processor.cores.core.ipc` and `board.processor.cores.core.commitStats0.ipc`.
+
+Aggregate collected metrics across SimPoints with one or more `--metric REGEX AGGREGATION` pairs. The metric regex is a partial match against collected metric names, but it must match exactly one metric across the input JSON. If it matches multiple metrics, the command errors and lists the ambiguous matches. Supported aggregations are `mean`, which computes `sum(weight * value) / sum(weight)` within each benchmark, and `max`, which ignores weights and returns the maximum value across SimPoints:
+
+```bash
+python -m autopoints aggregate metrics.json \
+  --metric 'cores\.core\.ipc$' mean \
+  --metric 'iew\.memOrderViolationEvents$' max \
+  --output aggregate-metrics.json
+```
+
+The aggregate JSON is keyed by benchmark, then exact matched stat name, then aggregation name.
+
 Install in editable mode if you prefer the `autopoints` console command:
 
 ```bash

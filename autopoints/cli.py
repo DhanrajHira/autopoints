@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import gzip
 import shlex
 import shutil
@@ -148,6 +149,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--clock-frequency",
         default="3GHz",
         help="Board clock frequency for checkpoint creation. Default: 3GHz.",
+    )
+    checkpoint.add_argument(
+        "--jobs",
+        type=positive_int,
+        help="Number of discovered benchmarks to checkpoint in parallel. Default: all discovered benchmarks.",
     )
     checkpoint.add_argument(
         "--dry-run",
@@ -632,13 +638,30 @@ def run_checkpoint(args: argparse.Namespace) -> int:
         )
         return 2
 
-    print(f"Discovered {len(benches)} collected benchmark(s).")
+    jobs = min(args.jobs or len(benches), len(benches))
+    print(
+        f"Discovered {len(benches)} collected benchmark(s). "
+        f"Running {jobs} checkpoint job(s) in parallel."
+    )
     failures: list[tuple[str, int]] = []
-    for bench in benches:
-        print(f"\n=== checkpoint {bench} ===")
-        returncode = run_checkpoint_for_bench(args, bench)
-        if returncode != 0:
-            failures.append((bench, returncode))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as executor:
+        futures = {
+            executor.submit(run_checkpoint_for_bench, args, bench): bench
+            for bench in benches
+        }
+        for future in concurrent.futures.as_completed(futures):
+            bench = futures[future]
+            try:
+                returncode = future.result()
+            except Exception as error:
+                print(
+                    f"checkpoint {bench} failed with an internal error: {error}",
+                    file=sys.stderr,
+                )
+                failures.append((bench, 1))
+                continue
+            if returncode != 0:
+                failures.append((bench, returncode))
 
     if failures:
         print("\nCheckpoint failures:", file=sys.stderr)
@@ -649,6 +672,7 @@ def run_checkpoint(args: argparse.Namespace) -> int:
 
 
 def run_checkpoint_for_bench(args: argparse.Namespace, bench: str) -> int:
+    print(f"\n=== checkpoint {bench} ===")
     try:
         gem5_bin = resolve_executable(args.gem5_bin, "gem5 binary")
         gem5_config = (

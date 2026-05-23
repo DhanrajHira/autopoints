@@ -111,8 +111,23 @@ Aggregate collected metrics across SimPoints with one or more `--metric REGEX AG
 ```bash
 python -m autopoints aggregate metrics.json \
   --metric 'cores\.core\.ipc$' mean \
+  --metric 'iew\.memOrderViolationEvents$' max
+```
+
+Write the aggregate JSON directly to a file with `--output`:
+
+```bash
+python -m autopoints aggregate metrics.json \
+  --metric 'cores\.core\.ipc$' mean \
   --metric 'iew\.memOrderViolationEvents$' max \
   --output aggregate-metrics.json
+```
+
+Use `-` as the metrics file to read the metrics JSON from stdin:
+
+```bash
+python -m autopoints metrics simulations/my-benchmark ipc | \
+  python -m autopoints aggregate - --metric 'cores\.core\.ipc$' mean
 ```
 
 The aggregate JSON is keyed by benchmark, then exact matched stat name, then aggregation name.

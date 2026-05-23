@@ -252,7 +252,7 @@ def build_parser() -> argparse.ArgumentParser:
     aggregate.add_argument(
         "metrics_json",
         type=Path,
-        help="JSON file produced by autopoints metrics.",
+        help="JSON file produced by autopoints metrics, or '-' to read from stdin.",
     )
     aggregate.add_argument(
         "--metric",
@@ -265,8 +265,7 @@ def build_parser() -> argparse.ArgumentParser:
     aggregate.add_argument(
         "--output",
         type=Path,
-        required=True,
-        help="Write aggregated JSON metrics to this file.",
+        help="Write aggregated JSON metrics to this file instead of stdout.",
     )
     aggregate.set_defaults(func=run_aggregate)
     return parser
@@ -822,10 +821,13 @@ def run_aggregate(args: argparse.Namespace) -> int:
     for warning in warnings:
         print(warning, file=sys.stderr)
     output = format_aggregate_json(payload)
-    output_path = args.output.expanduser().resolve()
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(output, encoding="utf-8")
-    print(f"Aggregated metrics JSON: {output_path}")
+    if args.output:
+        output_path = args.output.expanduser().resolve()
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(output, encoding="utf-8")
+        print(f"Aggregated metrics JSON: {output_path}")
+    else:
+        print(output, end="")
     return 0
 
 

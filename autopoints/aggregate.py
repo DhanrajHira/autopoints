@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Pattern, Sequence
@@ -70,6 +71,12 @@ def numeric_value(value: Any) -> float | None:
 
 
 def load_metrics_payload(metrics_json: Path) -> dict[str, Any]:
+    if str(metrics_json) == "-":
+        payload = json.loads(sys.stdin.read())
+        if not isinstance(payload, dict):
+            raise ValueError("metrics JSON root must be an object: stdin")
+        return payload
+
     path = metrics_json.expanduser().resolve()
     if not path.is_file():
         raise FileNotFoundError(f"metrics JSON does not exist: {path}")

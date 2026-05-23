@@ -453,6 +453,31 @@ def discover_collected_benchmarks(output_dir: Path) -> list[str]:
     return benches
 
 
+def fail_with_metadata(
+    metadata: dict[str, object],
+    meta_path: Path,
+    status: str,
+    message: str,
+    returncode: int = 1,
+    **extras: object,
+) -> int:
+    metadata["status"] = status
+    metadata.update(extras)
+    write_json(meta_path, metadata)
+    print(message, file=sys.stderr)
+    return returncode
+
+
+def emit_text(text: str, output_path: Path | None, label: str) -> None:
+    if output_path is None:
+        print(text, end="")
+        return
+    resolved = output_path.expanduser().resolve()
+    resolved.parent.mkdir(parents=True, exist_ok=True)
+    resolved.write_text(text, encoding="utf-8")
+    print(f"{label}: {resolved}")
+
+
 def run_collect(args: argparse.Namespace) -> int:
     try:
         target_command = normalize_command(args.target_command)
@@ -561,29 +586,30 @@ def run_collect(args: argparse.Namespace) -> int:
                 check=False,
             )
     except (OSError, ValueError) as error:
-        metadata["status"] = "valgrind_failed"
-        metadata["error"] = str(error)
-        write_json(paths.simpoint_meta, metadata)
-        print(f"Valgrind run failed before launch: {error}", file=sys.stderr)
-        return 1
-    if valgrind_result.returncode != 0:
-        metadata["status"] = "valgrind_failed"
-        metadata["valgrind_returncode"] = valgrind_result.returncode
-        write_json(paths.simpoint_meta, metadata)
-        print(
-            f"Valgrind run failed with exit code {valgrind_result.returncode}. See {paths.valgrind_log}.",
-            file=sys.stderr,
+        return fail_with_metadata(
+            metadata,
+            paths.simpoint_meta,
+            "valgrind_failed",
+            f"Valgrind run failed before launch: {error}",
+            error=str(error),
         )
-        return valgrind_result.returncode
+    if valgrind_result.returncode != 0:
+        return fail_with_metadata(
+            metadata,
+            paths.simpoint_meta,
+            "valgrind_failed",
+            f"Valgrind run failed with exit code {valgrind_result.returncode}. See {paths.valgrind_log}.",
+            returncode=valgrind_result.returncode,
+            valgrind_returncode=valgrind_result.returncode,
+        )
 
     if not paths.raw_bbv.is_file() or paths.raw_bbv.stat().st_size == 0:
-        metadata["status"] = "bbv_missing"
-        write_json(paths.simpoint_meta, metadata)
-        print(
+        return fail_with_metadata(
+            metadata,
+            paths.simpoint_meta,
+            "bbv_missing",
             f"Valgrind did not produce a non-empty BBV file at {paths.raw_bbv}.",
-            file=sys.stderr,
         )
-        return 1
 
     compress_file(paths.raw_bbv, paths.raw_bbv_gz)
     shutil.copy2(paths.raw_bbv_gz, paths.simpoint_bbv_gz)
@@ -596,14 +622,14 @@ def run_collect(args: argparse.Namespace) -> int:
         simpoint_command, paths.simpoint_log, cwd=paths.simpoints_dir
     )
     if simpoint_result != 0:
-        metadata["status"] = "simpoint_failed"
-        metadata["simpoint_returncode"] = simpoint_result
-        write_json(paths.simpoint_meta, metadata)
-        print(
+        return fail_with_metadata(
+            metadata,
+            paths.simpoint_meta,
+            "simpoint_failed",
             f"SimPoint failed with exit code {simpoint_result}. See {paths.simpoint_log}.",
-            file=sys.stderr,
+            returncode=simpoint_result,
+            simpoint_returncode=simpoint_result,
         )
-        return simpoint_result
 
     records = parse_simpoints(paths.simpoints, paths.weights, args.interval_size)
     metadata["status"] = "completed"
@@ -732,23 +758,25 @@ def run_checkpoint_for_bench(args: argparse.Namespace, bench: str) -> int:
     try:
         ensure_perf_event_paranoid_is_one()
     except PerfEventParanoidError as error:
-        metadata["status"] = "preflight_failed"
-        metadata["preflight_error"] = str(error)
-        write_json(paths.checkpoint_meta, metadata)
-        print(f"error: {error}", file=sys.stderr)
-        return 1
+        return fail_with_metadata(
+            metadata,
+            paths.checkpoint_meta,
+            "preflight_failed",
+            f"error: {error}",
+            preflight_error=str(error),
+        )
 
     print("Running gem5 checkpoint creation through sg kvm...")
     returncode = run_logged(launch_command, paths.checkpoint_log, cwd=paths.root)
     metadata["gem5_returncode"] = returncode
     if returncode != 0:
-        metadata["status"] = "gem5_failed"
-        write_json(paths.checkpoint_meta, metadata)
-        print(
+        return fail_with_metadata(
+            metadata,
+            paths.checkpoint_meta,
+            "gem5_failed",
             f"gem5 failed with exit code {returncode}. See {paths.checkpoint_log}.",
-            file=sys.stderr,
+            returncode=returncode,
         )
-        return returncode
 
     produced = [
         point for point in plan["points"] if Path(point["checkpoint_dir"]).is_dir()
@@ -756,14 +784,13 @@ def run_checkpoint_for_bench(args: argparse.Namespace, bench: str) -> int:
     metadata["produced_checkpoints"] = produced
     metadata["completed_at"] = datetime.now(timezone.utc).isoformat()
     if len(produced) != len(plan["points"]):
-        metadata["status"] = "checkpoint_missing"
-        write_json(paths.checkpoint_meta, metadata)
-        print(
+        return fail_with_metadata(
+            metadata,
+            paths.checkpoint_meta,
+            "checkpoint_missing",
             f"gem5 exited successfully but produced {len(produced)} of {len(plan['points'])} checkpoints. "
             f"See {paths.checkpoint_log}.",
-            file=sys.stderr,
         )
-        return 1
 
     metadata["status"] = "completed"
     write_json(paths.checkpoint_meta, metadata)
@@ -797,14 +824,7 @@ def run_metrics(args: argparse.Namespace) -> int:
 
     for warning in warnings:
         print(warning, file=sys.stderr)
-    output = format_metrics_json(payload)
-    if args.output:
-        output_path = args.output.expanduser().resolve()
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(output, encoding="utf-8")
-        print(f"Metrics JSON: {output_path}")
-    else:
-        print(output, end="")
+    emit_text(format_metrics_json(payload), args.output, "Metrics JSON")
     return 0
 
 
@@ -820,14 +840,7 @@ def run_aggregate(args: argparse.Namespace) -> int:
 
     for warning in warnings:
         print(warning, file=sys.stderr)
-    output = format_aggregate_json(payload)
-    if args.output:
-        output_path = args.output.expanduser().resolve()
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(output, encoding="utf-8")
-        print(f"Aggregated metrics JSON: {output_path}")
-    else:
-        print(output, end="")
+    emit_text(format_aggregate_json(payload), args.output, "Aggregated metrics JSON")
     return 0
 
 

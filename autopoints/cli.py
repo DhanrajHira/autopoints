@@ -116,7 +116,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Create gem5 KVM checkpoints for collected SimPoints.",
         description="Use generated SimPoints to create warmup-adjusted gem5 KVM checkpoints.",
     )
-    add_artifact_args(checkpoint, bench_required=True)
+    add_artifact_args(checkpoint, bench_required=False)
     checkpoint.add_argument(
         "--gem5-bin",
         required=True,
@@ -270,7 +270,7 @@ def add_artifact_args(parser: argparse.ArgumentParser, bench_required: bool) -> 
     parser.add_argument(
         "--bench",
         required=bench_required,
-        help="Benchmark name used under bbv/, simpoints/, and checkpoints/.",
+        help="Benchmark name used under bbv/, simpoints/, and checkpoints/. For checkpoint, omit to discover all collected benchmarks.",
     )
     parser.add_argument(
         "--output-dir",
@@ -434,6 +434,18 @@ def remove_collection_outputs(paths: AutopointsPaths) -> None:
     ):
         if path.exists():
             path.unlink()
+
+
+def discover_collected_benchmarks(output_dir: Path) -> list[str]:
+    simpoints_root = output_dir.expanduser().resolve() / "simpoints"
+    if not simpoints_root.is_dir():
+        return []
+
+    benches = []
+    for entry in sorted(simpoints_root.iterdir()):
+        if entry.is_dir() and (entry / "simpoint.meta.json").is_file():
+            benches.append(entry.name)
+    return benches
 
 
 def run_collect(args: argparse.Namespace) -> int:
@@ -604,8 +616,40 @@ def run_collect(args: argparse.Namespace) -> int:
 
 
 def run_checkpoint(args: argparse.Namespace) -> int:
+    if args.bench:
+        try:
+            bench = sanitize_benchmark_name(args.bench)
+        except ValueError as error:
+            print(f"error: {error}", file=sys.stderr)
+            return 2
+        return run_checkpoint_for_bench(args, bench)
+
+    benches = discover_collected_benchmarks(args.output_dir)
+    if not benches:
+        print(
+            f"error: no collected benchmarks found under {(args.output_dir.expanduser().resolve() / 'simpoints')}",
+            file=sys.stderr,
+        )
+        return 2
+
+    print(f"Discovered {len(benches)} collected benchmark(s).")
+    failures: list[tuple[str, int]] = []
+    for bench in benches:
+        print(f"\n=== checkpoint {bench} ===")
+        returncode = run_checkpoint_for_bench(args, bench)
+        if returncode != 0:
+            failures.append((bench, returncode))
+
+    if failures:
+        print("\nCheckpoint failures:", file=sys.stderr)
+        for bench, returncode in failures:
+            print(f"  {bench}: exit {returncode}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def run_checkpoint_for_bench(args: argparse.Namespace, bench: str) -> int:
     try:
-        bench = sanitize_benchmark_name(args.bench)
         gem5_bin = resolve_executable(args.gem5_bin, "gem5 binary")
         gem5_config = (
             (args.gem5_config or default_checkpoint_config()).expanduser().resolve()

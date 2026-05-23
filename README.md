@@ -51,6 +51,15 @@ python -m autopoints checkpoint \
   --warmup-insts 30000000
 ```
 
+Omit `--bench` to checkpoint every collected benchmark under `simpoints/`:
+
+```bash
+python -m autopoints checkpoint \
+  --output-dir . \
+  --gem5-bin ../gem5/build/X86/gem5.opt \
+  --warmup-insts 30000000
+```
+
 Then restore and simulate every checkpoint with the default detailed O3CPU config. You can pass one benchmark checkpoint directory:
 
 ```bash

@@ -349,11 +349,15 @@ def simulate_checkpoints(
             )
             for point in points
         ]
+        completed = 0
+        total = len(futures)
         for future in concurrent.futures.as_completed(futures):
             result = future.result()
             results.append(result)
+            completed += 1
             print(
-                f"{result.benchmark} simpoint {result.simpoint_index:02d}: {result.status}"
+                f"[{completed}/{total}] {result.benchmark} simpoint "
+                f"{result.simpoint_index:02d}: {result.status}"
             )
 
     failures = [result for result in results if result.returncode != 0]

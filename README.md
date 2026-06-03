@@ -92,6 +92,16 @@ python -m autopoints simulate checkpoints/my-benchmark \
   --jobs 4
 ```
 
+By default, simulation outputs are written under `<artifact-root>/simulations/<bench>/`. Use `--output` to choose a different simulation output root, which allows multiple simulation campaigns to reuse the same checkpoints without clobbering each other:
+
+```bash
+python -m autopoints simulate checkpoints/my-benchmark \
+  --gem5-bin ../gem5/build/X86/gem5.opt \
+  --output simulations-o3-baseline
+```
+
+This writes files such as `simulations-o3-baseline/<bench>/simpoint_00/m5out/stats.txt`.
+
 Extract weighted metrics from completed simulations by passing a `simulations/` root or one benchmark under it, followed by one or more regex patterns matched against full gem5 stat names:
 
 ```bash

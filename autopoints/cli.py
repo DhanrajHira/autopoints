@@ -199,6 +199,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="ROI instructions to simulate after warmup. Default: checkpoint plan interval_size.",
     )
     simulate.add_argument(
+        "--output",
+        type=Path,
+        help="Simulation output root. Default: <artifact-root>/simulations. Outputs are written under <output>/<bench>/simpoint_XX/.",
+    )
+    simulate.add_argument(
         "--jobs",
         type=positive_int,
         help="Number of checkpoint simulations to run in parallel. Default: all checkpoints.",
@@ -806,6 +811,7 @@ def run_simulate(args: argparse.Namespace) -> int:
         gem5_config=args.gem5_config,
         gem5_args=args.gem5_arg,
         roi_insts=args.roi_insts,
+        output_dir=args.output,
         jobs=args.jobs,
         force=args.force,
         dry_run=args.dry_run,

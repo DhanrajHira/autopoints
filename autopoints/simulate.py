@@ -260,6 +260,7 @@ def simulate_checkpoints(
     gem5_config: Path | None,
     gem5_args: Sequence[str],
     roi_insts: int | None,
+    output_dir: Path | None,
     jobs: int | None,
     force: bool,
     dry_run: bool,
@@ -283,6 +284,7 @@ def simulate_checkpoints(
         return 1
 
     points: list[SimulationPoint] = []
+    custom_output_root = output_dir.expanduser().resolve() if output_dir else None
     for checkpoint_dir in checkpoint_dirs:
         try:
             plan_path, plan, checkpoint_meta = load_checkpoint_metadata(checkpoint_dir)
@@ -292,7 +294,11 @@ def simulate_checkpoints(
 
         benchmark = benchmark_from_plan(plan, checkpoint_dir)
         artifact_root = artifact_root_from_plan(plan, checkpoint_dir)
-        output_root = artifact_root / "simulations" / benchmark
+        output_root = (
+            custom_output_root / benchmark
+            if custom_output_root is not None
+            else artifact_root / "simulations" / benchmark
+        )
         selected_roi_insts = (
             roi_insts if roi_insts is not None else int(plan["interval_size"])
         )

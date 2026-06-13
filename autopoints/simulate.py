@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import hashlib
 import shlex
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -27,6 +28,9 @@ class SimulationPoint:
     metadata_path: Path
     plan_path: Path
     checkpoint_meta_path: Path
+    gem5_config_source: Path
+    gem5_config_copy: Path
+    gem5_config_sha256: str
     point: dict[str, Any]
     roi_insts: int
 
@@ -98,6 +102,9 @@ def simulation_points(
     checkpoint_meta_path: Path,
     benchmark: str,
     output_root: Path,
+    gem5_config_source: Path,
+    gem5_config_copy: Path,
+    gem5_config_sha256: str,
     roi_insts: int,
 ) -> list[SimulationPoint]:
     points: list[SimulationPoint] = []
@@ -118,6 +125,9 @@ def simulation_points(
                 metadata_path=point_dir / "simulation.meta.json",
                 plan_path=plan_path,
                 checkpoint_meta_path=checkpoint_meta_path,
+                gem5_config_source=gem5_config_source,
+                gem5_config_copy=gem5_config_copy,
+                gem5_config_sha256=gem5_config_sha256,
                 point=point,
                 roi_insts=roi_insts,
             )
@@ -136,7 +146,6 @@ def metadata_completed(path: Path) -> bool:
 
 def build_gem5_simulation_command(
     gem5_bin: str,
-    gem5_config: Path,
     gem5_args: Sequence[str],
     point: SimulationPoint,
 ) -> list[str]:
@@ -145,7 +154,7 @@ def build_gem5_simulation_command(
         "--outdir",
         str(point.m5out_dir),
         *gem5_args,
-        str(gem5_config),
+        str(point.gem5_config_copy),
         "--checkpoint-plan",
         str(point.plan_path),
         "--simpoint-index",
@@ -170,6 +179,9 @@ def write_simulation_metadata(
         "checkpoint_plan": str(point.plan_path),
         "checkpoint_meta": str(point.checkpoint_meta_path),
         "checkpoint_dir": str(point.checkpoint_dir),
+        "gem5_config_source": str(point.gem5_config_source),
+        "gem5_config_copy": str(point.gem5_config_copy),
+        "gem5_config_sha256": point.gem5_config_sha256,
         "simpoint_index": point.simpoint_index,
         "roi_insts": point.roi_insts,
         "warmup_insts": int(point.point["warmup_insts"]),
@@ -188,7 +200,6 @@ def write_simulation_metadata(
 def run_one_simulation(
     point: SimulationPoint,
     gem5_bin: str,
-    gem5_config: Path,
     gem5_args: Sequence[str],
     force: bool,
     dry_run: bool,
@@ -206,7 +217,6 @@ def run_one_simulation(
 
     command = build_gem5_simulation_command(
         gem5_bin=gem5_bin,
-        gem5_config=gem5_config,
         gem5_args=gem5_args,
         point=point,
     )
@@ -254,6 +264,18 @@ def run_one_simulation(
     )
 
 
+def copy_gem5_config_snapshot(
+    source: Path, source_bytes: bytes, source_sha256: str, simulation_root: Path
+) -> Path:
+    simulation_root.mkdir(parents=True, exist_ok=True)
+    suffix = source.suffix or ".py"
+    destination = simulation_root / f"gem5-config-{source_sha256[:16]}{suffix}"
+    if not destination.exists() or destination.read_bytes() != source_bytes:
+        destination.write_bytes(source_bytes)
+        destination.chmod(source.stat().st_mode & 0o777)
+    return destination
+
+
 def simulate_checkpoints(
     checkpoint_paths: Sequence[Path],
     gem5_bin_value: str,
@@ -275,6 +297,8 @@ def simulate_checkpoints(
             raise FileNotFoundError(
                 f"gem5 simulation config does not exist: {config_path}"
             )
+        config_bytes = config_path.read_bytes()
+        config_sha256 = hashlib.sha256(config_bytes).hexdigest()
     except (FileNotFoundError, ValueError) as error:
         print(f"error: {error}")
         return 2
@@ -285,6 +309,7 @@ def simulate_checkpoints(
 
     points: list[SimulationPoint] = []
     custom_output_root = output_dir.expanduser().resolve() if output_dir else None
+    config_copies: dict[Path, Path] = {}
     for checkpoint_dir in checkpoint_dirs:
         try:
             plan_path, plan, checkpoint_meta = load_checkpoint_metadata(checkpoint_dir)
@@ -294,11 +319,25 @@ def simulate_checkpoints(
 
         benchmark = benchmark_from_plan(plan, checkpoint_dir)
         artifact_root = artifact_root_from_plan(plan, checkpoint_dir)
-        output_root = (
-            custom_output_root / benchmark
+        simulation_root = (
+            custom_output_root
             if custom_output_root is not None
-            else artifact_root / "simulations" / benchmark
+            else artifact_root / "simulations"
         )
+        output_root = (
+            simulation_root / benchmark
+            if custom_output_root is not None
+            else simulation_root / benchmark
+        )
+        config_copy = config_copies.get(simulation_root)
+        if config_copy is None:
+            config_copy = copy_gem5_config_snapshot(
+                source=config_path,
+                source_bytes=config_bytes,
+                source_sha256=config_sha256,
+                simulation_root=simulation_root,
+            )
+            config_copies[simulation_root] = config_copy
         selected_roi_insts = (
             roi_insts if roi_insts is not None else int(plan["interval_size"])
         )
@@ -310,6 +349,9 @@ def simulate_checkpoints(
             checkpoint_meta_path=checkpoint_meta_path,
             benchmark=benchmark,
             output_root=output_root,
+            gem5_config_source=config_path,
+            gem5_config_copy=config_copy,
+            gem5_config_sha256=config_sha256,
             roi_insts=selected_roi_insts,
         )
         if len(benchmark_points) != len(plan["points"]):
@@ -342,7 +384,6 @@ def simulate_checkpoints(
                 run_one_simulation,
                 point,
                 gem5_bin,
-                config_path,
                 gem5_args,
                 force,
                 dry_run,

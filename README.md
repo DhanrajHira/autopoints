@@ -102,6 +102,8 @@ python -m autopoints simulate checkpoints/my-benchmark \
 
 This writes files such as `simulations-o3-baseline/<bench>/simpoint_00/m5out/stats.txt`.
 
+At the start of `simulate`, autopoints copies the selected gem5 config into each benchmark simulation output directory with a content-hashed name such as `gem5-config-<sha>.py`, then runs gem5 using that copied config. This records the exact config used for reproducibility and prevents a config file edit during a parallel simulation campaign from affecting only some SimPoints.
+
 Extract weighted metrics from completed simulations by passing a `simulations/` root or one benchmark under it, followed by one or more regex patterns matched against full gem5 stat names:
 
 ```bash
@@ -223,6 +225,7 @@ checkpoints/
     cpt.simpoint_01_inst_.../
 simulations/
   <bench>/
+    gem5-config-<sha>.py
     simpoint_00/
       gem5.log
       simulation.meta.json
@@ -249,6 +252,7 @@ Important files:
 - `simulations/<bench>/simpoint_XX/simulation.meta.json`: reproducibility record for one detailed restore simulation.
 - `simulations/<bench>/simpoint_XX/gem5.log`: gem5 stdout/stderr from one detailed restore simulation.
 - `simulations/<bench>/simpoint_XX/m5out/`: gem5 `--outdir` for one detailed restore simulation. gem5 writes `stats.txt`, `config.ini`, `config.json`, and related outputs here.
+- `simulations/<bench>/gem5-config-<sha>.py`: immutable copy of the gem5 config used by the simulation campaign. Each `simulation.meta.json` records the source config, copied config, and SHA-256 hash.
 
 `collect` supports `--stdin`, `--stdout`, `--stdout-append`, `--stderr`, and
 `--stderr-append`. These redirects are used during Valgrind collection, recorded

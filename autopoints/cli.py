@@ -10,7 +10,7 @@ import sys
 from contextlib import ExitStack, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator, Sequence
+from typing import Any, Iterator, Sequence
 
 from .aggregate import aggregate_metrics_json, format_aggregate_json
 from .checkpoint import DEFAULT_WARMUP_INSTS, create_checkpoint_plan
@@ -154,6 +154,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--jobs",
         type=positive_int,
         help="Number of discovered benchmarks to checkpoint in parallel. Default: all discovered benchmarks.",
+    )
+    checkpoint.add_argument(
+        "--force",
+        action="store_true",
+        help="Remove existing planned checkpoint directories before creating new checkpoints.",
     )
     checkpoint.add_argument(
         "--dry-run",
@@ -723,7 +728,7 @@ def run_checkpoint_for_bench(args: argparse.Namespace, bench: str) -> int:
             requested_warmup_insts=args.warmup_insts,
             memory_size=args.memory_size,
             clock_frequency=args.clock_frequency,
-            allow_existing_checkpoints=args.dry_run,
+            allow_existing_checkpoints=args.dry_run or args.force,
         )
     except (FileNotFoundError, FileExistsError, KeyError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
@@ -759,6 +764,22 @@ def run_checkpoint_for_bench(args: argparse.Namespace, bench: str) -> int:
     if args.dry_run:
         print(f"Dry run complete. Metadata: {paths.checkpoint_meta}")
         return 0
+
+    if args.force:
+        try:
+            removed = remove_existing_planned_checkpoints(paths, plan)
+        except ValueError as error:
+            return fail_with_metadata(
+                metadata,
+                paths.checkpoint_meta,
+                "force_failed",
+                f"error: {error}",
+                force_error=str(error),
+            )
+        if removed:
+            metadata["removed_existing_checkpoints"] = [str(path) for path in removed]
+            write_json(paths.checkpoint_meta, metadata)
+            print(f"Removed {len(removed)} existing checkpoint directorie(s).")
 
     try:
         ensure_perf_event_paranoid_is_one()
@@ -802,6 +823,29 @@ def run_checkpoint_for_bench(args: argparse.Namespace, bench: str) -> int:
     print(f"Checkpoints: {paths.checkpoints_dir}")
     print(f"Metadata: {paths.checkpoint_meta}")
     return 0
+
+
+def remove_existing_planned_checkpoints(
+    paths: AutopointsPaths, plan: dict[str, Any]
+) -> list[Path]:
+    checkpoints_root = paths.checkpoints_dir.resolve()
+    removed: list[Path] = []
+    for point in plan["points"]:
+        checkpoint_dir = Path(point["checkpoint_dir"]).resolve()
+        if not checkpoint_dir.exists():
+            continue
+        try:
+            checkpoint_dir.relative_to(checkpoints_root)
+        except ValueError as error:
+            raise ValueError(
+                f"refusing to remove checkpoint outside {checkpoints_root}: {checkpoint_dir}"
+            ) from error
+        if checkpoint_dir.is_dir():
+            shutil.rmtree(checkpoint_dir)
+        else:
+            checkpoint_dir.unlink()
+        removed.append(checkpoint_dir)
+    return removed
 
 
 def run_simulate(args: argparse.Namespace) -> int:

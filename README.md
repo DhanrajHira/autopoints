@@ -70,6 +70,16 @@ python -m autopoints checkpoint \
   --jobs 8
 ```
 
+By default, `checkpoint` refuses to run if any planned checkpoint directory already exists. Use `--force` to remove those planned checkpoint directories before creating replacements:
+
+```bash
+python -m autopoints checkpoint \
+  --bench my-benchmark \
+  --output-dir . \
+  --gem5-bin ../gem5/build/X86/gem5.opt \
+  --force
+```
+
 Then restore and simulate every checkpoint with the default detailed O3CPU config. You can pass one benchmark checkpoint directory:
 
 ```bash

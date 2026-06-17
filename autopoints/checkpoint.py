@@ -12,7 +12,7 @@ from .simpoints import (
     write_json,
 )
 
-DEFAULT_WARMUP_INSTS = 30_000_000
+DEFAULT_WARMUP_INSTS = 10_000_000
 
 
 def create_checkpoint_plan(

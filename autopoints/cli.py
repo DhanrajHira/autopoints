@@ -126,7 +126,7 @@ def build_parser() -> argparse.ArgumentParser:
     checkpoint.add_argument(
         "--gem5-config",
         type=Path,
-        help="Override the gem5 checkpoint config script. Defaults to autopoints' SE KVM config.",
+        help="Override the gem5 checkpoint config script. Defaults to autopoints' SE KVM config, or the SE AtomicSimpleCPU config with --use-atomic-cpu.",
     )
     checkpoint.add_argument(
         "--gem5-arg",
@@ -149,6 +149,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--clock-frequency",
         default="3GHz",
         help="Board clock frequency for checkpoint creation. Default: 3GHz.",
+    )
+    checkpoint.add_argument(
+        "--use-atomic-cpu",
+        action="store_true",
+        help=(
+            "Use the AtomicSimpleCPU for checkpoint generation instead of KVM. "
+            "Slower, but does not require KVM, the kvm group, or perf events. "
+            "Use this when KVM is unavailable."
+        ),
     )
     checkpoint.add_argument(
         "--jobs",
@@ -711,13 +720,17 @@ def run_checkpoint_for_bench(args: argparse.Namespace, bench: str) -> int:
     try:
         gem5_bin = resolve_executable(args.gem5_bin, "gem5 binary")
         gem5_config = (
-            (args.gem5_config or default_checkpoint_config()).expanduser().resolve()
+            (args.gem5_config or default_checkpoint_config(args.use_atomic_cpu))
+            .expanduser()
+            .resolve()
         )
         if not gem5_config.is_file():
             raise FileNotFoundError(f"gem5 config does not exist: {gem5_config}")
     except (FileNotFoundError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
+
+    cpu_type = "atomic" if args.use_atomic_cpu else "kvm"
 
     paths = AutopointsPaths.create(args.output_dir, bench)
     paths.ensure_checkpoint_dirs()
@@ -728,6 +741,7 @@ def run_checkpoint_for_bench(args: argparse.Namespace, bench: str) -> int:
             requested_warmup_insts=args.warmup_insts,
             memory_size=args.memory_size,
             clock_frequency=args.clock_frequency,
+            cpu_type=cpu_type,
             allow_existing_checkpoints=args.dry_run or args.force,
         )
     except (FileNotFoundError, FileExistsError, KeyError, ValueError) as error:
@@ -741,12 +755,15 @@ def run_checkpoint_for_bench(args: argparse.Namespace, bench: str) -> int:
         m5out_dir=paths.checkpoint_m5out,
         gem5_args=args.gem5_arg,
     )
-    launch_command = wrap_with_sg_kvm(gem5_command)
+    launch_command = (
+        gem5_command if args.use_atomic_cpu else wrap_with_sg_kvm(gem5_command)
+    )
 
     metadata: dict[str, object] = {
         "status": "planned",
         "created_at": datetime.now(timezone.utc).isoformat(),
         "benchmark": bench,
+        "cpu_type": cpu_type,
         "checkpoint_plan": str(paths.checkpoint_plan),
         "gem5_command": gem5_command,
         "launch_command": launch_command,
@@ -781,18 +798,22 @@ def run_checkpoint_for_bench(args: argparse.Namespace, bench: str) -> int:
             write_json(paths.checkpoint_meta, metadata)
             print(f"Removed {len(removed)} existing checkpoint directorie(s).")
 
-    try:
-        ensure_perf_event_paranoid_is_one()
-    except PerfEventParanoidError as error:
-        return fail_with_metadata(
-            metadata,
-            paths.checkpoint_meta,
-            "preflight_failed",
-            f"error: {error}",
-            preflight_error=str(error),
-        )
+    if not args.use_atomic_cpu:
+        try:
+            ensure_perf_event_paranoid_is_one()
+        except PerfEventParanoidError as error:
+            return fail_with_metadata(
+                metadata,
+                paths.checkpoint_meta,
+                "preflight_failed",
+                f"error: {error}",
+                preflight_error=str(error),
+            )
 
-    print("Running gem5 checkpoint creation through sg kvm...")
+    if args.use_atomic_cpu:
+        print("Running gem5 checkpoint creation with AtomicSimpleCPU...")
+    else:
+        print("Running gem5 checkpoint creation through sg kvm...")
     returncode = run_logged(launch_command, paths.checkpoint_log, cwd=paths.root)
     metadata["gem5_returncode"] = returncode
     if returncode != 0:

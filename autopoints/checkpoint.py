@@ -20,6 +20,7 @@ def create_checkpoint_plan(
     requested_warmup_insts: int,
     memory_size: str,
     clock_frequency: str,
+    cpu_type: str = "kvm",
     allow_existing_checkpoints: bool = False,
 ) -> dict[str, Any]:
     if not paths.simpoint_meta.is_file():
@@ -48,6 +49,7 @@ def create_checkpoint_plan(
         "requested_warmup_insts": requested_warmup_insts,
         "memory_size": memory_size,
         "clock_frequency": clock_frequency,
+        "cpu_type": cpu_type,
         "program_cwd": simpoint_meta.get("program_cwd"),
         "target_command": simpoint_meta["target_command"],
         "redirects": simpoint_meta.get("redirects", {}),

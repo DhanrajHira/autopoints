@@ -5,14 +5,18 @@
 The workflow has three stages:
 
 1. `collect`: run a target program under Valgrind `exp-bbv`, then run SimPoint on the generated basic block vectors.
-2. `checkpoint`: use the selected SimPoints to run gem5 with `KVMCPU` through `sg kvm` and save warmup-adjusted checkpoints before each ROI.
+2. `checkpoint`: use the selected SimPoints to run gem5 with `KVMCPU` through `sg kvm` (or the `AtomicSimpleCPU` with `--use-atomic-cpu` when KVM is unavailable) and save warmup-adjusted checkpoints before each ROI.
 3. `simulate`: restore every generated checkpoint and run detailed O3CPU ROI simulations.
 
 ## Requirements
 
 - Valgrind with the `exp-bbv` tool available.
 - A SimPoint binary, for example `../SimPoint.3.2/bin/simpoint`.
-- A gem5 X86 build with KVM support, for example `../gem5/build/X86/gem5.opt`.
+- A gem5 X86 build, for example `../gem5/build/X86/gem5.opt`.
+
+The default `checkpoint` mode uses KVM, which additionally requires:
+
+- A gem5 X86 build with KVM support.
 - The user must be able to run gem5 through `sg kvm`.
 - `kernel.perf_event_paranoid` must be exactly `1` for precise KVM instruction-count exits.
 
@@ -22,6 +26,11 @@ Check and set the perf level with:
 cat /proc/sys/kernel/perf_event_paranoid
 sudo sysctl kernel.perf_event_paranoid=1
 ```
+
+When KVM is unavailable, pass `--use-atomic-cpu` to `checkpoint`. This uses the
+AtomicSimpleCPU instead, which needs none of the KVM, `sg kvm`, or
+`perf_event_paranoid` requirements above. It is slower than KVM fast-forwarding
+but produces equivalent checkpoints.
 
 ## Usage
 
@@ -78,6 +87,16 @@ python -m autopoints checkpoint \
   --output-dir . \
   --gem5-bin ../gem5/build/X86/gem5.opt \
   --force
+```
+
+When KVM is not available, add `--use-atomic-cpu` to generate the same checkpoints with the AtomicSimpleCPU. This skips the `sg kvm` wrapper and the `perf_event_paranoid` preflight check:
+
+```bash
+python -m autopoints checkpoint \
+  --bench my-benchmark \
+  --output-dir . \
+  --gem5-bin ../gem5/build/X86/gem5.opt \
+  --use-atomic-cpu
 ```
 
 Then restore and simulate every checkpoint with the default detailed O3CPU config. You can pass one benchmark checkpoint directory:
@@ -330,10 +349,10 @@ Keep the checkpoint plan parsing, workload setup, checkpoint restore, warmup, st
 
 ## Implementation Notes
 
-- The checkpoint command launches gem5 as `sg kvm -c '<gem5 command>'`.
-- The current checkpoint config targets X86 SE-mode workloads with one KVM core.
+- By default the checkpoint command launches gem5 as `sg kvm -c '<gem5 command>'` and uses the `se_kvm_simpoint_checkpoints.py` config, which targets X86 SE-mode workloads with one KVM core.
+- `--use-atomic-cpu` instead uses the `se_atomic_simpoint_checkpoints.py` config (one AtomicSimpleCPU core with `NoCache`, the fastest KVM-free functional fast-forward setup), launches gem5 directly without `sg kvm`, and skips the `perf_event_paranoid` preflight. The CPU choice is recorded as `cpu_type` in `checkpoint.plan.json` and `checkpoint.meta.json`.
 - The simulate command launches gem5 directly once per checkpoint and does not use `sg kvm`.
 - The default simulation config targets X86 SE-mode checkpoints with one O3CPU core.
-- KVM instruction stops rely on perf, so `autopoints checkpoint` fails early unless `/proc/sys/kernel/perf_event_paranoid` is `1`.
+- KVM instruction stops rely on perf, so the default `autopoints checkpoint` fails early unless `/proc/sys/kernel/perf_event_paranoid` is `1`. `--use-atomic-cpu` does not perform this check.
 - The checkpoint config does not use gem5's `SimpointResource`. `autopoints` already computes exact warmup-adjusted checkpoint instruction counts in `checkpoint.plan.json`, so the config schedules those stops directly. This avoids gem5 recomputing warmup-adjusted starts internally and avoids a zero-warmup bug observed in this gem5 tree's `SimpointResource` path.
 - All workflow code should use `autopoints.paths.AutopointsPaths` instead of constructing artifact paths directly.

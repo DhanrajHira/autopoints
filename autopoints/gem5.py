@@ -14,12 +14,13 @@ class PerfEventParanoidError(RuntimeError):
     pass
 
 
-def default_checkpoint_config() -> Path:
-    return (
-        Path(__file__).resolve().parent
-        / "gem5_configs"
-        / "se_kvm_simpoint_checkpoints.py"
+def default_checkpoint_config(use_atomic_cpu: bool = False) -> Path:
+    config_name = (
+        "se_atomic_simpoint_checkpoints.py"
+        if use_atomic_cpu
+        else "se_kvm_simpoint_checkpoints.py"
     )
+    return Path(__file__).resolve().parent / "gem5_configs" / config_name
 
 
 def read_perf_event_paranoid(path: Path = PERF_EVENT_PARANOID) -> int:

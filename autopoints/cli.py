@@ -142,8 +142,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     checkpoint.add_argument(
         "--memory-size",
-        default="2GiB",
-        help="Memory size for checkpoint creation. Detailed restores must use the same size. Default: 2GiB.",
+        default="4GiB",
+        help="Memory size for checkpoint creation. Detailed restores must use the same size. Default: 4GiB.",
     )
     checkpoint.add_argument(
         "--clock-frequency",

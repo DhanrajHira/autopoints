@@ -27,6 +27,7 @@ from .metrics import collect_simulation_metrics, format_metrics_json
 from .paths import AutopointsPaths, benchmark_name_from_command, sanitize_benchmark_name
 from .simulate import default_simulation_config, simulate_checkpoints
 from .sweep import sweep_checkpoints
+from .sweep_report import collect_sweep_report, format_sweep_report_json
 from .simpoints import parse_simpoints, write_json
 
 DEFAULT_INTERVAL_SIZE = 100_000_000
@@ -269,6 +270,36 @@ def build_parser() -> argparse.ArgumentParser:
         help="Write aggregated JSON metrics to this file instead of stdout.",
     )
     aggregate.set_defaults(func=run_aggregate)
+
+    sweep_report = subparsers.add_parser(
+        "sweep-report",
+        help="Collect and aggregate sweep statistics into one sweep-aware JSON.",
+        description=(
+            "Walk a sweep output directory, group every completed simulation by "
+            "the parameter combination it records, and aggregate each "
+            "combination's SimPoints into weighted per-benchmark metrics. Emits a "
+            "tidy JSON with one record per (combination, benchmark)."
+        ),
+    )
+    sweep_report.add_argument(
+        "sweep_path",
+        type=Path,
+        help="Sweep output root (the sweep --output directory) or a simulation.meta.json.",
+    )
+    sweep_report.add_argument(
+        "--metric",
+        action="append",
+        nargs=2,
+        required=True,
+        metavar=("REGEX", "AGGREGATION"),
+        help="Metric regex and aggregation. Supported aggregations: mean (weighted arithmetic mean), max. May be repeated.",
+    )
+    sweep_report.add_argument(
+        "--output",
+        type=Path,
+        help="Write the sweep report JSON to this file instead of stdout.",
+    )
+    sweep_report.set_defaults(func=run_sweep_report)
     return parser
 
 
@@ -929,6 +960,22 @@ def run_sweep(args: argparse.Namespace) -> int:
         dry_run=args.dry_run,
         param_specs=args.params,
     )
+
+
+def run_sweep_report(args: argparse.Namespace) -> int:
+    try:
+        payload, warnings = collect_sweep_report(
+            sweep_path=args.sweep_path,
+            metric_specs=args.metric,
+        )
+    except (FileNotFoundError, ValueError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 2
+
+    for warning in warnings:
+        print(warning, file=sys.stderr)
+    emit_text(format_sweep_report_json(payload), args.output, "Sweep report JSON")
+    return 0
 
 
 def run_metrics(args: argparse.Namespace) -> int:

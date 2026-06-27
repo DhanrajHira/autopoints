@@ -8,7 +8,7 @@ The workflow has three stages:
 2. `checkpoint`: use the selected SimPoints to run gem5 with `KVMCPU` through `sg kvm` (or the `AtomicSimpleCPU` with `--use-atomic-cpu` when KVM is unavailable) and save warmup-adjusted checkpoints before each ROI.
 3. `simulate`: restore every generated checkpoint and run detailed O3CPU ROI simulations.
 
-The `sweep` command extends `simulate` to run a parameter study, simulating the same checkpoints once per value (or cartesian product) of one or more gem5 config parameters.
+The `sweep` command extends `simulate` to run a parameter study, simulating the same checkpoints once per value (or cartesian product) of one or more gem5 config parameters, and `sweep-report` collects and aggregates the resulting statistics into one sweep-aware JSON.
 
 ## Requirements
 
@@ -214,6 +214,41 @@ python -m autopoints metrics simulations/my-benchmark ipc | \
 ```
 
 The aggregate JSON is keyed by benchmark, then exact matched stat name, then aggregation name.
+
+### Reporting on a sweep
+
+`sweep-report` is the sweep-aware equivalent of running `metrics` and `aggregate` together. Point it at a `sweep` output root and pass the same `--metric REGEX AGGREGATION` pairs as `aggregate`. It recursively discovers every completed `simulation.meta.json`, groups them by the parameter combination each one records, and aggregates each combination's SimPoints into weighted per-benchmark metrics:
+
+```bash
+python -m autopoints sweep-report sweeps/grid \
+  --metric 'cores\.core\.ipc$' mean \
+  --metric 'iew\.memOrderViolationEvents$' max \
+  --output sweep-stats.json
+```
+
+The output is a tidy JSON with the swept parameter axes and one record per `(combination, benchmark)`, which loads directly into a table or DataFrame:
+
+```json
+{
+  "param_names": ["l2-size", "cpu-clock"],
+  "results": [
+    {
+      "params": {"l2-size": "1MB", "cpu-clock": "2GHz"},
+      "benchmark": "my-benchmark",
+      "metrics": {
+        "board.processor.cores.core.ipc": {"mean": 1.25}
+      }
+    },
+    {
+      "params": {"l2-size": "1MB", "cpu-clock": "3GHz"},
+      "benchmark": "my-benchmark",
+      "metrics": {"board.processor.cores.core.ipc": {"mean": 1.875}}
+    }
+  ]
+}
+```
+
+`param_names` lists the axes in `--param` order. Records are sorted by parameter combination, then benchmark. Each metric regex must resolve to exactly one stat name across the sweep, matching `aggregate`'s behavior. Omit `--output` to print to stdout. Pointing `sweep-report` at a non-sweep `simulations/` tree still works — those records carry an empty `params` object and `param_names` is empty.
 
 Install in editable mode if you prefer the `autopoints` console command:
 

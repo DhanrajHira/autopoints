@@ -149,6 +149,69 @@ def matching_stats(
     return matches, matched_patterns
 
 
+def params_from_metadata(metadata: dict[str, Any]) -> dict[str, str]:
+    raw = metadata.get("params")
+    if not isinstance(raw, dict):
+        return {}
+    return {str(name): str(value) for name, value in raw.items()}
+
+
+@dataclass(frozen=True)
+class SimulationPointMetrics:
+    benchmark: str
+    simpoint_index: int
+    simpoint_key: str
+    metrics: dict[str, JsonValue]
+    params: dict[str, str]
+    matched_patterns: frozenset[str]
+
+
+def extract_point_metrics(
+    metadata_path: Path, patterns: Sequence[MetricPattern]
+) -> tuple[SimulationPointMetrics | None, str | None]:
+    """Read one simulation.meta.json and its stats.txt into a point record.
+
+    Returns ``(record, None)`` on success or ``(None, warning)`` when the point
+    should be skipped (missing/incomplete metadata, missing stats, etc.).
+    """
+    try:
+        metadata = load_json(metadata_path)
+    except (OSError, ValueError) as error:
+        return None, f"warning: skipping {metadata_path}: {error}"
+
+    status = metadata.get("status")
+    if status != "completed":
+        return None, f"warning: skipping {metadata_path}: status is {status!r}"
+
+    stats_path = stats_path_from_metadata(metadata, metadata_path)
+    if not stats_path.is_file():
+        return (
+            None,
+            f"warning: skipping {metadata_path}: stats.txt does not exist: {stats_path}",
+        )
+
+    try:
+        stats = parse_stats(stats_path)
+        simpoint_index = simpoint_index_from_metadata(metadata, metadata_path)
+        weight = finite_float_or_none(point_from_metadata(metadata).get("weight"))
+    except (OSError, TypeError, ValueError) as error:
+        return None, f"warning: skipping {metadata_path}: {error}"
+
+    stats_matches, matched_patterns = matching_stats(stats, patterns)
+    benchmark = str(metadata.get("benchmark") or metadata_path.parent.parent.name)
+    point_metrics: dict[str, JsonValue] = {"weight": weight}
+    point_metrics.update(stats_matches)
+    record = SimulationPointMetrics(
+        benchmark=benchmark,
+        simpoint_index=simpoint_index,
+        simpoint_key=f"simpoint_{simpoint_index:02d}",
+        metrics=point_metrics,
+        params=params_from_metadata(metadata),
+        matched_patterns=frozenset(matched_patterns),
+    )
+    return record, None
+
+
 def collect_simulation_metrics(
     simulation_path: Path, metric_patterns: Sequence[str]
 ) -> tuple[dict[str, dict[str, dict[str, JsonValue]]], list[str]]:
@@ -162,41 +225,15 @@ def collect_simulation_metrics(
     by_benchmark: dict[str, list[tuple[int, str, dict[str, JsonValue]]]] = {}
 
     for metadata_path in metadata_paths:
-        try:
-            metadata = load_json(metadata_path)
-        except (OSError, ValueError) as error:
-            warnings.append(f"warning: skipping {metadata_path}: {error}")
+        record, warning = extract_point_metrics(metadata_path, patterns)
+        if warning is not None:
+            warnings.append(warning)
+        if record is None:
             continue
 
-        status = metadata.get("status")
-        if status != "completed":
-            warnings.append(f"warning: skipping {metadata_path}: status is {status!r}")
-            continue
-
-        stats_path = stats_path_from_metadata(metadata, metadata_path)
-        if not stats_path.is_file():
-            warnings.append(
-                f"warning: skipping {metadata_path}: stats.txt does not exist: {stats_path}"
-            )
-            continue
-
-        try:
-            stats = parse_stats(stats_path)
-            simpoint_index = simpoint_index_from_metadata(metadata, metadata_path)
-            weight = finite_float_or_none(point_from_metadata(metadata).get("weight"))
-        except (OSError, TypeError, ValueError) as error:
-            warnings.append(f"warning: skipping {metadata_path}: {error}")
-            continue
-
-        stats_matches, point_matched_patterns = matching_stats(stats, patterns)
-        matched_patterns.update(point_matched_patterns)
-
-        benchmark = str(metadata.get("benchmark") or metadata_path.parent.parent.name)
-        simpoint_key = f"simpoint_{simpoint_index:02d}"
-        point_metrics: dict[str, JsonValue] = {"weight": weight}
-        point_metrics.update(stats_matches)
-        by_benchmark.setdefault(benchmark, []).append(
-            (simpoint_index, simpoint_key, point_metrics)
+        matched_patterns.update(record.matched_patterns)
+        by_benchmark.setdefault(record.benchmark, []).append(
+            (record.simpoint_index, record.simpoint_key, record.metrics)
         )
 
     if not by_benchmark:

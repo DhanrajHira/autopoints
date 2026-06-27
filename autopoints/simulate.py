@@ -33,6 +33,8 @@ class SimulationPoint:
     gem5_config_sha256: str
     point: dict[str, Any]
     roi_insts: int
+    program_cwd: str | None
+    params: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -106,6 +108,7 @@ def simulation_points(
     gem5_config_copy: Path,
     gem5_config_sha256: str,
     roi_insts: int,
+    params: tuple[tuple[str, str], ...] = (),
 ) -> list[SimulationPoint]:
     points: list[SimulationPoint] = []
     for point in plan["points"]:
@@ -130,6 +133,8 @@ def simulation_points(
                 gem5_config_sha256=gem5_config_sha256,
                 point=point,
                 roi_insts=roi_insts,
+                program_cwd=plan.get("program_cwd"),
+                params=params,
             )
         )
     return sorted(points, key=lambda item: (item.benchmark, item.simpoint_index))
@@ -149,7 +154,7 @@ def build_gem5_simulation_command(
     gem5_args: Sequence[str],
     point: SimulationPoint,
 ) -> list[str]:
-    return [
+    command = [
         gem5_bin,
         "--outdir",
         str(point.m5out_dir),
@@ -164,6 +169,11 @@ def build_gem5_simulation_command(
         "--roi-insts",
         str(point.roi_insts),
     ]
+    # Sweep parameters are passed to the config script (after it), not to the
+    # gem5 binary. The config script is responsible for interpreting --<name>.
+    for name, value in point.params:
+        command.extend([f"--{name}", value])
+    return command
 
 
 def write_simulation_metadata(
@@ -190,6 +200,8 @@ def write_simulation_metadata(
         "gem5_command": list(command),
         "point": point.point,
     }
+    if point.params:
+        payload["params"] = {name: value for name, value in point.params}
     if returncode is not None:
         payload["gem5_returncode"] = returncode
     if status == "completed":
@@ -242,7 +254,13 @@ def run_one_simulation(
             log_path=str(point.log_path),
         )
 
-    returncode = run_logged(command, point.log_path)
+    # Run gem5 from the program's working directory so that gem5's checkpoint
+    # restore can reopen file-backed VMAs (mmap'd workload inputs) that were
+    # serialized with their original relative paths. gem5's MemState::unserialize
+    # opens those files with a raw host open() relative to gem5's cwd, not the
+    # simulated process cwd, so the host cwd must match program_cwd.
+    cwd = Path(point.program_cwd) if point.program_cwd else None
+    returncode = run_logged(command, point.log_path, cwd=cwd)
     status = "completed" if returncode == 0 else "gem5_failed"
     write_simulation_metadata(
         point=point,
@@ -276,110 +294,134 @@ def copy_gem5_config_snapshot(
     return destination
 
 
-def simulate_checkpoints(
+@dataclass(frozen=True)
+class CampaignInputs:
+    checkpoint_dirs: list[Path]
+    gem5_bin: str
+    config_path: Path
+    config_bytes: bytes
+    config_sha256: str
+
+
+def prepare_campaign(
     checkpoint_paths: Sequence[Path],
     gem5_bin_value: str,
     gem5_config: Path | None,
-    gem5_args: Sequence[str],
+) -> CampaignInputs:
+    """Resolve the shared inputs for a simulate or sweep run.
+
+    Raises FileNotFoundError or ValueError on bad inputs.
+    """
+    checkpoint_dirs = discover_checkpoint_dirs(checkpoint_paths)
+    gem5_bin = resolve_executable(gem5_bin_value, "gem5 binary")
+    config_path = (gem5_config or default_simulation_config()).expanduser().resolve()
+    if not config_path.is_file():
+        raise FileNotFoundError(f"gem5 simulation config does not exist: {config_path}")
+    config_bytes = config_path.read_bytes()
+    config_sha256 = hashlib.sha256(config_bytes).hexdigest()
+    return CampaignInputs(
+        checkpoint_dirs=checkpoint_dirs,
+        gem5_bin=gem5_bin,
+        config_path=config_path,
+        config_bytes=config_bytes,
+        config_sha256=config_sha256,
+    )
+
+
+def build_points_for_dir(
+    checkpoint_dir: Path,
+    inputs: CampaignInputs,
+    custom_output_root: Path | None,
     roi_insts: int | None,
-    output_dir: Path | None,
+    config_copies: dict[Path, Path],
+    combo_subpath: Path | None = None,
+    params: tuple[tuple[str, str], ...] = (),
+) -> list[SimulationPoint]:
+    """Build the simulation points for one discovered checkpoint directory.
+
+    ``combo_subpath`` nests the output under a per-parameter-combination
+    directory (used by sweep); ``params`` are passed through to the gem5 config
+    script for each point. The frozen gem5 config copy is shared per output
+    root, so all combinations of a sweep reuse a single ``gem5-config-<sha>.py``.
+    """
+    try:
+        plan_path, plan, checkpoint_meta = load_checkpoint_metadata(checkpoint_dir)
+    except (FileNotFoundError, ValueError) as error:
+        print(f"warning: skipping {checkpoint_dir}: {error}")
+        return []
+
+    benchmark = benchmark_from_plan(plan, checkpoint_dir)
+    artifact_root = artifact_root_from_plan(plan, checkpoint_dir)
+    simulation_root = (
+        custom_output_root
+        if custom_output_root is not None
+        else artifact_root / "simulations"
+    )
+    config_copy = config_copies.get(simulation_root)
+    if config_copy is None:
+        config_copy = copy_gem5_config_snapshot(
+            source=inputs.config_path,
+            source_bytes=inputs.config_bytes,
+            source_sha256=inputs.config_sha256,
+            simulation_root=simulation_root,
+        )
+        config_copies[simulation_root] = config_copy
+    combo_root = (
+        simulation_root if combo_subpath is None else simulation_root / combo_subpath
+    )
+    output_root = combo_root / benchmark
+    selected_roi_insts = (
+        roi_insts if roi_insts is not None else int(plan["interval_size"])
+    )
+    checkpoint_meta_path = checkpoint_dir / "checkpoint.meta.json"
+    benchmark_points = simulation_points(
+        checkpoint_dir=checkpoint_dir,
+        plan=plan,
+        plan_path=plan_path,
+        checkpoint_meta_path=checkpoint_meta_path,
+        benchmark=benchmark,
+        output_root=output_root,
+        gem5_config_source=inputs.config_path,
+        gem5_config_copy=config_copy,
+        gem5_config_sha256=inputs.config_sha256,
+        roi_insts=selected_roi_insts,
+        params=params,
+    )
+    if len(benchmark_points) != len(plan["points"]):
+        missing = len(plan["points"]) - len(benchmark_points)
+        print(
+            f"warning: {benchmark}: skipping {missing} planned checkpoints missing on disk"
+        )
+    if checkpoint_meta.get("status") != "completed":
+        print(
+            f"warning: {benchmark}: checkpoint metadata status is "
+            f"{checkpoint_meta.get('status')!r}"
+        )
+    return benchmark_points
+
+
+def run_simulation_pool(
+    points: Sequence[SimulationPoint],
+    gem5_bin: str,
+    gem5_args: Sequence[str],
     jobs: int | None,
     force: bool,
     dry_run: bool,
 ) -> int:
-    try:
-        checkpoint_dirs = discover_checkpoint_dirs(checkpoint_paths)
-        gem5_bin = resolve_executable(gem5_bin_value, "gem5 binary")
-        config_path = (
-            (gem5_config or default_simulation_config()).expanduser().resolve()
-        )
-        if not config_path.is_file():
-            raise FileNotFoundError(
-                f"gem5 simulation config does not exist: {config_path}"
-            )
-        config_bytes = config_path.read_bytes()
-        config_sha256 = hashlib.sha256(config_bytes).hexdigest()
-    except (FileNotFoundError, ValueError) as error:
-        print(f"error: {error}")
-        return 2
+    """Run ``points`` through gem5 in a single thread pool and report failures.
 
-    if not checkpoint_dirs:
-        print("error: no checkpoint.plan.json files found")
-        return 1
-
-    points: list[SimulationPoint] = []
-    custom_output_root = output_dir.expanduser().resolve() if output_dir else None
-    config_copies: dict[Path, Path] = {}
-    for checkpoint_dir in checkpoint_dirs:
-        try:
-            plan_path, plan, checkpoint_meta = load_checkpoint_metadata(checkpoint_dir)
-        except (FileNotFoundError, ValueError) as error:
-            print(f"warning: skipping {checkpoint_dir}: {error}")
-            continue
-
-        benchmark = benchmark_from_plan(plan, checkpoint_dir)
-        artifact_root = artifact_root_from_plan(plan, checkpoint_dir)
-        simulation_root = (
-            custom_output_root
-            if custom_output_root is not None
-            else artifact_root / "simulations"
-        )
-        output_root = (
-            simulation_root / benchmark
-            if custom_output_root is not None
-            else simulation_root / benchmark
-        )
-        config_copy = config_copies.get(simulation_root)
-        if config_copy is None:
-            config_copy = copy_gem5_config_snapshot(
-                source=config_path,
-                source_bytes=config_bytes,
-                source_sha256=config_sha256,
-                simulation_root=simulation_root,
-            )
-            config_copies[simulation_root] = config_copy
-        selected_roi_insts = (
-            roi_insts if roi_insts is not None else int(plan["interval_size"])
-        )
-        checkpoint_meta_path = checkpoint_dir / "checkpoint.meta.json"
-        benchmark_points = simulation_points(
-            checkpoint_dir=checkpoint_dir,
-            plan=plan,
-            plan_path=plan_path,
-            checkpoint_meta_path=checkpoint_meta_path,
-            benchmark=benchmark,
-            output_root=output_root,
-            gem5_config_source=config_path,
-            gem5_config_copy=config_copy,
-            gem5_config_sha256=config_sha256,
-            roi_insts=selected_roi_insts,
-        )
-        if len(benchmark_points) != len(plan["points"]):
-            missing = len(plan["points"]) - len(benchmark_points)
-            print(
-                f"warning: {benchmark}: skipping {missing} planned checkpoints missing on disk"
-            )
-        if checkpoint_meta.get("status") != "completed":
-            print(
-                f"warning: {benchmark}: checkpoint metadata status is "
-                f"{checkpoint_meta.get('status')!r}"
-            )
-        points.extend(benchmark_points)
-
-    if not points:
-        print("error: no checkpoint directories from discovered plans exist on disk")
-        return 1
-
+    Each progress line is prefixed with the point's parameter combination (see
+    ``describe_point``); for a plain ``simulate`` run the prefix is empty.
+    """
     workers = min(jobs or len(points), len(points))
-
     print(
-        f"Simulating {len(points)} checkpoints from {len(checkpoint_dirs)} checkpoint plans; "
-        f"parallel jobs: {workers}"
+        f"Simulating {len(points)} checkpoints; parallel jobs: {workers}"
     )
 
     results: list[SimulationResult] = []
+    point_labels = {id(point): describe_point(point) for point in points}
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
-        futures = [
+        futures = {
             executor.submit(
                 run_one_simulation,
                 point,
@@ -387,17 +429,19 @@ def simulate_checkpoints(
                 gem5_args,
                 force,
                 dry_run,
-            )
+            ): point
             for point in points
-        ]
+        }
         completed = 0
         total = len(futures)
         for future in concurrent.futures.as_completed(futures):
+            point = futures[future]
             result = future.result()
             results.append(result)
             completed += 1
             print(
-                f"[{completed}/{total}] {result.benchmark} simpoint "
+                f"[{completed}/{total}] {point_labels[id(point)]}"
+                f"{result.benchmark} simpoint "
                 f"{result.simpoint_index:02d}: {result.status}"
             )
 
@@ -411,3 +455,64 @@ def simulate_checkpoints(
             )
         return 1
     return 0
+
+
+def describe_point(point: SimulationPoint) -> str:
+    """A short '[name=value ...] ' prefix for a point's parameter combination."""
+    if not point.params:
+        return ""
+    combo = " ".join(f"{name}={value}" for name, value in point.params)
+    return f"[{combo}] "
+
+
+def simulate_checkpoints(
+    checkpoint_paths: Sequence[Path],
+    gem5_bin_value: str,
+    gem5_config: Path | None,
+    gem5_args: Sequence[str],
+    roi_insts: int | None,
+    output_dir: Path | None,
+    jobs: int | None,
+    force: bool,
+    dry_run: bool,
+) -> int:
+    try:
+        inputs = prepare_campaign(checkpoint_paths, gem5_bin_value, gem5_config)
+    except (FileNotFoundError, ValueError) as error:
+        print(f"error: {error}")
+        return 2
+
+    if not inputs.checkpoint_dirs:
+        print("error: no checkpoint.plan.json files found")
+        return 1
+
+    points: list[SimulationPoint] = []
+    custom_output_root = output_dir.expanduser().resolve() if output_dir else None
+    config_copies: dict[Path, Path] = {}
+    for checkpoint_dir in inputs.checkpoint_dirs:
+        points.extend(
+            build_points_for_dir(
+                checkpoint_dir=checkpoint_dir,
+                inputs=inputs,
+                custom_output_root=custom_output_root,
+                roi_insts=roi_insts,
+                config_copies=config_copies,
+            )
+        )
+
+    if not points:
+        print("error: no checkpoint directories from discovered plans exist on disk")
+        return 1
+
+    print(
+        f"Discovered {len(points)} checkpoints from "
+        f"{len(inputs.checkpoint_dirs)} checkpoint plans."
+    )
+    return run_simulation_pool(
+        points=points,
+        gem5_bin=inputs.gem5_bin,
+        gem5_args=gem5_args,
+        jobs=jobs,
+        force=force,
+        dry_run=dry_run,
+    )

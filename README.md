@@ -8,6 +8,8 @@ The workflow has three stages:
 2. `checkpoint`: use the selected SimPoints to run gem5 with `KVMCPU` through `sg kvm` (or the `AtomicSimpleCPU` with `--use-atomic-cpu` when KVM is unavailable) and save warmup-adjusted checkpoints before each ROI.
 3. `simulate`: restore every generated checkpoint and run detailed O3CPU ROI simulations.
 
+The `sweep` command extends `simulate` to run a parameter study, simulating the same checkpoints once per value (or cartesian product) of one or more gem5 config parameters.
+
 ## Requirements
 
 - Valgrind with the `exp-bbv` tool available.
@@ -132,6 +134,46 @@ python -m autopoints simulate checkpoints/my-benchmark \
 This writes files such as `simulations-o3-baseline/<bench>/simpoint_00/m5out/stats.txt`.
 
 At the start of `simulate`, autopoints copies the selected gem5 config into the simulation output root with a content-hashed name such as `gem5-config-<sha>.py`, then runs every checkpoint in that simulation campaign using the same copied config. This records the exact config used for reproducibility and prevents a config file edit during a parallel simulation campaign from affecting only some SimPoints.
+
+### Parameter sweeps
+
+`sweep` runs `simulate` once per parameter combination. It accepts every `simulate` argument plus one or more `--param NAME VALUE [VALUE ...]` flags. For each value, autopoints passes `--NAME VALUE` through to the gem5 config script (after the config path, alongside `--checkpoint-plan`, `--roi-insts`, and the other restore flags). The config script is responsible for interpreting `--NAME` and configuring the simulation accordingly; from autopoints' perspective it only forwards the flag.
+
+```bash
+python -m autopoints sweep checkpoints/my-benchmark \
+  --gem5-bin ../gem5/build/X86/gem5.opt \
+  --output sweeps/l2 \
+  --param l2-size 1MB 2MB 4MB
+```
+
+This runs three detailed simulations of every discovered checkpoint — one per `--l2-size` value — and nests each combination's outputs under a `<name>_<value>/` directory:
+
+```
+sweeps/l2/
+  gem5-config-<sha>.py
+  l2-size_1MB/<bench>/simpoint_00/m5out/stats.txt
+  l2-size_2MB/<bench>/simpoint_00/m5out/stats.txt
+  l2-size_4MB/<bench>/simpoint_00/m5out/stats.txt
+```
+
+Pass `--param` more than once to sweep a cartesian product. Each parameter adds one nested directory level, in the order the `--param` flags appear:
+
+```bash
+python -m autopoints sweep checkpoints/my-benchmark \
+  --gem5-bin ../gem5/build/X86/gem5.opt \
+  --output sweeps/grid \
+  --param l2-size 1MB 2MB \
+  --param cpu-clock 2GHz 3GHz
+```
+
+```
+sweeps/grid/l2-size_1MB/cpu-clock_2GHz/<bench>/simpoint_00/...
+sweeps/grid/l2-size_1MB/cpu-clock_3GHz/<bench>/simpoint_00/...
+sweeps/grid/l2-size_2MB/cpu-clock_2GHz/<bench>/simpoint_00/...
+sweeps/grid/l2-size_2MB/cpu-clock_3GHz/<bench>/simpoint_00/...
+```
+
+All `(combination × checkpoint)` simulations run in one shared pool; `--jobs` caps how many gem5 processes run at once across the entire sweep. Each `simulation.meta.json` records the parameter combination under a `params` key. The single frozen `gem5-config-<sha>.py` is shared by every combination, since only the swept `--param` values differ between them. Place `--param` flags after the checkpoint paths so argparse does not absorb the positional checkpoint arguments.
 
 Extract weighted metrics from completed simulations by passing a `simulations/` root or one benchmark under it, followed by one or more regex patterns matched against full gem5 stat names:
 
@@ -264,6 +306,20 @@ simulations/
         config.json
     simpoint_01/
       ...
+```
+
+`sweep` reuses the `simulations/` layout but inserts one `<name>_<value>/` directory level per `--param`, in flag order, between the output root and `<bench>/`:
+
+```text
+<output>/
+  gem5-config-<sha>.py
+  <name1>_<value1>/
+    <name2>_<value2>/
+      <bench>/
+        simpoint_00/
+          gem5.log
+          simulation.meta.json   # records the combination under "params"
+          m5out/
 ```
 
 Important files:

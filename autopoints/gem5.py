@@ -56,7 +56,11 @@ def resolve_executable(value: str, label: str) -> str:
     resolved_name = shutil.which(value)
     if resolved_name is None:
         raise FileNotFoundError(f"{label} was not found on PATH: {value}")
-    return resolved_name
+    # Return an absolute path so the executable resolves regardless of the
+    # working directory the gem5 subprocess is later launched from (e.g. the
+    # simulate step runs gem5 from the workload's program_cwd). shutil.which
+    # returns a relative path for a "./binary" form, which would otherwise fail.
+    return str(Path(resolved_name).resolve())
 
 
 def build_gem5_checkpoint_command(

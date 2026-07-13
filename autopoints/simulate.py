@@ -414,9 +414,7 @@ def run_simulation_pool(
     ``describe_point``); for a plain ``simulate`` run the prefix is empty.
     """
     workers = min(jobs or len(points), len(points))
-    print(
-        f"Simulating {len(points)} checkpoints; parallel jobs: {workers}"
-    )
+    print(f"Simulating {len(points)} checkpoints; parallel jobs: {workers}")
 
     results: list[SimulationResult] = []
     point_labels = {id(point): describe_point(point) for point in points}

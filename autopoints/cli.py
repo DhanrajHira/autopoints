@@ -262,7 +262,7 @@ def build_parser() -> argparse.ArgumentParser:
         nargs=2,
         required=True,
         metavar=("REGEX", "AGGREGATION"),
-        help="Metric regex and aggregation. Supported aggregations: mean (weighted arithmetic mean), max. May be repeated.",
+        help="Metric regex and aggregation. Supported aggregations: mean (weighted arithmetic mean), harmonic_mean (weighted harmonic mean), max. May be repeated.",
     )
     aggregate.add_argument(
         "--output",
@@ -292,7 +292,7 @@ def build_parser() -> argparse.ArgumentParser:
         nargs=2,
         required=True,
         metavar=("REGEX", "AGGREGATION"),
-        help="Metric regex and aggregation. Supported aggregations: mean (weighted arithmetic mean), max. May be repeated.",
+        help="Metric regex and aggregation. Supported aggregations: mean (weighted arithmetic mean), harmonic_mean (weighted harmonic mean), max. May be repeated.",
     )
     sweep_report.add_argument(
         "--output",

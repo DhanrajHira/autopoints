@@ -189,7 +189,7 @@ python -m autopoints metrics simulations/my-benchmark ipc --output metrics.json
 
 The output is one JSON object keyed by benchmark and SimPoint. Each SimPoint entry contains its SimPoint `weight` and every stat whose name matches any requested regex. For example, `ipc` matches both `board.processor.cores.core.ipc` and `board.processor.cores.core.commitStats0.ipc`.
 
-Aggregate collected metrics across SimPoints with one or more `--metric REGEX AGGREGATION` pairs. The metric regex is a partial match against collected metric names, but it must match exactly one metric across the input JSON. If it matches multiple metrics, the command errors and lists the ambiguous matches. Supported aggregations are `mean`, which computes `sum(weight * value) / sum(weight)` within each benchmark, and `max`, which ignores weights and returns the maximum value across SimPoints:
+Aggregate collected metrics across SimPoints with one or more `--metric REGEX AGGREGATION` pairs. The metric regex is a partial match against collected metric names, but it must match exactly one metric across the input JSON. If it matches multiple metrics, the command errors and lists the ambiguous matches. Supported aggregations are `mean`, which computes `sum(weight * value) / sum(weight)` within each benchmark, `harmonic_mean`, which computes the weighted harmonic mean `sum(weight) / sum(weight / value)` (skipping non-positive values), and `max`, which ignores weights and returns the maximum value across SimPoints:
 
 ```bash
 python -m autopoints aggregate metrics.json \

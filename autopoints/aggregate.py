@@ -12,6 +12,10 @@ AGGREGATION_ALIASES = {
     "mean": "mean",
     "arithmetic_mean": "mean",
     "arithmetic-mean": "mean",
+    "harmonic_mean": "harmonic_mean",
+    "harmonic-mean": "harmonic_mean",
+    "harmonic": "harmonic_mean",
+    "hmean": "harmonic_mean",
     "max": "max",
 }
 
@@ -150,6 +154,36 @@ def weighted_mean_for_metric(
     return weighted_sum / weight_sum, weight_sum, samples
 
 
+def weighted_harmonic_mean_for_metric(
+    benchmark_points: dict[str, Any], metric_name: str
+) -> tuple[float | None, float, int]:
+    """Weighted harmonic mean: sum(weight) / sum(weight / value).
+
+    Points whose value is non-positive are skipped, since the harmonic mean is
+    only defined for positive values and a zero value has no finite reciprocal.
+    """
+    weight_sum = 0.0
+    reciprocal_sum = 0.0
+    samples = 0
+
+    for point_metrics in benchmark_points.values():
+        if not isinstance(point_metrics, dict) or metric_name not in point_metrics:
+            continue
+
+        weight = numeric_value(point_metrics.get("weight"))
+        value = numeric_value(point_metrics.get(metric_name))
+        if weight is None or value is None or value <= 0:
+            continue
+
+        weight_sum += weight
+        reciprocal_sum += weight / value
+        samples += 1
+
+    if samples == 0 or weight_sum == 0 or reciprocal_sum == 0:
+        return None, weight_sum, samples
+    return weight_sum / reciprocal_sum, weight_sum, samples
+
+
 def max_for_metric(
     benchmark_points: dict[str, Any], metric_name: str
 ) -> tuple[float | None, int]:
@@ -175,6 +209,11 @@ def aggregate_value_for_metric(
 ) -> tuple[float | None, int]:
     if aggregation == "mean":
         value, _, samples = weighted_mean_for_metric(benchmark_points, metric_name)
+        return value, samples
+    if aggregation == "harmonic_mean":
+        value, _, samples = weighted_harmonic_mean_for_metric(
+            benchmark_points, metric_name
+        )
         return value, samples
     if aggregation == "max":
         return max_for_metric(benchmark_points, metric_name)
